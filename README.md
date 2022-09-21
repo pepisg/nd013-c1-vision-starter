@@ -7,7 +7,7 @@ For this project, we will be using data from the [Waymo Open dataset](https://wa
 [OPTIONAL] - The files can be downloaded directly from the website as tar files or from the [Google Cloud Bucket](https://console.cloud.google.com/storage/browser/waymo_open_dataset_v_1_2_0_individual_files/) as individual tf records. We have already provided the data required to finish this project in the workspace, so you don't need to download it separately.
 
 ## Structure
-
+This project contains the necessary files for training an object detection resnet neural network. There are several python scripts that are useful for downloading training data and splitting it into train, validation and test datasets. Also there is a script to generate new config files to train the tensorflow model. There are two jupyter notebooks for visualization of the raw data and the augmented data respectively. 
 ### Data
 
 The data you will use for training, validation and testing is organized as follow:
@@ -40,6 +40,15 @@ experiments/
 
 ## Prerequisites
 
+The following python libraries are required:
+- Cython
+- jupyter
+- matplotlib
+- Pillow
+- ray
+- waymo-open-dataset-tf-2-5-0
+
+tensorflow and CUDA are required as well.
 ### Local Setup
 
 For local setup if you have your own Nvidia GPU, you can use the provided Dockerfile and requirements in the [build directory](./build).
@@ -141,20 +150,92 @@ python inference_video.py --labelmap_path label_map.pbtxt --model_path experimen
 ## Submission Template
 
 ### Project overview
-This section should contain a brief description of the project and what we are trying to achieve. Why is object detection such an important component of self driving car systems?
+The aim of this project is to train an object detection model for a camera mounted on a car. Training data is taken out from the waymo open dataset. Object detection is a crucial feature of self driving cars because it allows to transform images into useful information providing the car with data about the relative position of objects that it has to avoid, preventing crashes and injuries. 
 
 ### Set up
-This section should contain a brief description of the steps to follow to run the code for this repository.
+For setting up the project you can follow the steps on the **Local Setup** section on this readme. Additionally you can use the [remote - containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) vscode extension to build the container and access it though vscode.
 
 ### Dataset
+As stated above, this project uses the data from the waymo open dataset. Instructions to download it from google cloud storage are provided above as well.
 #### Dataset analysis
-This section should contain a quantitative and qualitative description of the dataset. It should include images, charts and other visualizations.
+The selected dataset includes a higly variable group of images from highways, residential areas, parking lots, daytime, nightime, rain, etc. The following pictures show 10 random images that were overlayed with the ground truth bounding boxes.
+
+![img](exploratory_analysis.png)
+
+Only cars, pedestrians and bicycles are included in the ground truth data. The most common objects are by far cars follwed by pedestrians with about a third of the occurrences. bicycles are very rare; just as the histogram below shows: 
+
+![img](classes.png)
+
+The dataset shows great color variability. RGB values are quite uniformely distrubuted with a slightly higher probability of being ~80 likely due to the very common apperance of the greyish color of the street in the images. most images have good brightness as the picture below shows:
+
+![histogram](histogram.png)
+
 #### Cross validation
-This section should detail the cross validation strategy and justify your approach.
+The dataset was split in 3 datasets containing:
+
+- 70% of the images for training
+- 20% of the images for validation
+- 10% of the images for testing
+
+Since the dataset is relatively large it is possible to rely on a smaller proportion for cross validation.
 
 ### Training
 #### Reference experiment
-This section should detail the results of the reference experiment. It should includes training metrics and a detailed explanation of the algorithm's performances.
+The first training session was conducted with the default presets for 25000 epochs (see [pipeline](experiments/reference/pipeline_new.config)). the following picture shows how the loss behaved:
+
+![Screenshot from 2022-09-20 19-04-07](https://user-images.githubusercontent.com/71234974/191391728-0072ed40-d7d7-4b9b-9762-3f03ea82c9bd.png)
+
+In the warmup phase the loss was fairly low and constant, however in the epoch 4k a huge increase occurred. After that the training continued effectively reducing the loss as more iterations were run, however the final results were very poor anyway due to this huge increase that happened over a short period of time. This behavior was probably due to a high learning rate, which took the model way out of its minimum in very few iterations (see picture below).
+
+![image](https://user-images.githubusercontent.com/71234974/191393310-c00f8504-e865-468d-96ba-c366267aef9e.png)
+
+As the blue dots show, validation losses are consistent with the training losses, which shows that even if the performance of the model is poor it did not overfit. These were the final metric: 
+
+    - mAP@0.5IOU: 0.000063
+    - AP@0.5IOU/vehicle: 0.000126
+    - AP@0.5IOU/pedestrian: 0.000000
+    - AP@0.5IOU/cyclist: nan
+    - localization_loss: 0.889936
+    - classification_loss: 130.260071
+    - regularization_loss: 2002455621533696.000000
+    - total_loss: 2002455621533696.000000
+
+This metrics show once again that the performance of the model is poor. Cyclists AP is not reported likely due to the extremely low amount of cyclist in the datasets, as was discovered in the exploratory data analysis. The following training video also backs up this claim: 
+
+![gif](animation1.gif)
+
 
 #### Improve on the reference
-This section should highlight the different strategies you adopted to improve your model. It should contain relevant figures and details of your findings.
+
+From the observations above the following changes were introduced for the second training session (see [pipeline](experiments/solution/pipeline_new.config)): 
+
+1. To avoid the huge loss gain that occurred in the first run the learning rate was halved (from 0.04 to 0.02). Also the warmup learning rate was reduced (from 0.013 to 0.005)
+2. To mimic closer or further looks to the objects the `random_image_scale` data augmentation was added. This should increase the variability of the dataset by making objects appear at different distances from the car
+3. To mimic the effect of direct light or changes in the dynamic range of the camera the `random_distort_color` augmentation was added. This should increase the variability of the dataset by adding more challenging detection scenarios where sudden illumination changes occur
+4. to mimic the effect of driving at different hours (night, early in the morning, noon, etc) the `random_adjust_brightness` data augmentation was added. This should increase the variability of the dataset as well.
+
+Training was conducted again over 25000 epochs and results improved significantly: 
+
+![Screenshot from 2022-09-20 20-16-20](https://user-images.githubusercontent.com/71234974/191394256-b95e56ee-dd3e-40c0-89c9-176001e64cdf.png)
+
+The loss still clearly improves over time and the huge jump in the reference experiment is suppressed successfully. The blue (validation) points are a little bit higher than the orange loss curves, meaning that the model may have been slightly overtrained, however they also match some local maximum in the plots meaning that this phenomenon is limited.
+
+The learning rate as well as the loss were relatively stable at the time the experiment stopped, meaning that this is probably the best behavior that could have been obtained with these presets even is more training epochs were conducted. Note how the learning rate curve has lower values than the reference experiment
+
+
+![Screenshot from 2022-09-20 19-06-10](https://user-images.githubusercontent.com/71234974/191394267-63d52b60-4318-44ce-accf-4637981355dc.png)
+
+These were the final metrics:
+
+    - mAP@0.5IOU: 0.089866
+    - AP@0.5IOU/vehicle: 0.066611
+    - AP@0.5IOU/pedestrian: 0.113122
+    - AP@0.5IOU/cyclist: nan
+    - Loss/localization_loss: 0.326807
+    - Loss/classification_loss: 0.286569
+    - Loss/regularization_loss: 0.233031
+    - Loss/total_loss: 0.846408
+
+They show a significant improvement over the reference due to the changes in the learning rate and the data augmentation techniques used. This claim is also backed up by the training video of this experiment, which hugely contrasts with the previous one:
+
+![gifsito](animation.gif)
